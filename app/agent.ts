@@ -137,21 +137,30 @@ export async function createSpotifyPlaylistAgent(userInput: string) {
     return { messages: [response] };
   }
 
-  // Define a new graph
+  // Create and compile workflow
   const workflow = new StateGraph(MessagesAnnotation)
     .addNode("agent", callModel)
-    .addEdge("__start__", "agent") // Entrypoint
+    .addEdge("__start__", "agent")
     .addNode("tools", new ToolNode(agentTools))
     .addEdge("tools", "agent")
     .addConditionalEdges("agent", shouldContinue);
+
   const memory = new MemorySaver();
-  // Compile the workflow into a LangChain Runnable
-  const app = workflow.compile({ checkpointer: memory });
+  const app = workflow.compile({
+    checkpointer: memory,
+  });
 
   // Execute the workflow with user input
-  const finalState = await app.invoke({
-    messages: [new HumanMessage(userInput)],
-  });
+  const finalState = await app.invoke(
+    {
+      messages: [new HumanMessage(userInput)],
+    },
+    {
+      configurable: {
+        thread_id: "spotify_playlist_thread",
+      },
+    }
+  );
 
   return finalState.messages[finalState.messages.length - 1].content;
 }
