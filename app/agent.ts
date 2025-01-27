@@ -116,6 +116,7 @@ export async function createSpotifyPlaylistAgent(userInput: string) {
   const model = new ChatGroq({
     model: "llama-3.3-70b-versatile", // or any other Groq model
     temperature: 0,
+    apiKey: process.env.NEXT_PUBLIC_GROQ_KEY,
   }).bindTools(agentTools);
 
   // Define the function that determines whether to continue or not
