@@ -1,5 +1,3 @@
-"use server";
-
 import { MemorySaver } from "@langchain/langgraph";
 import { HumanMessage } from "@langchain/core/messages";
 import { DynamicTool } from "@langchain/core/tools";
@@ -39,7 +37,7 @@ export async function createSpotifyPlaylistAgent(userInput: string) {
       description: "Search for tracks on Spotify by name, artist, or album",
       func: async (input: string) => {
         try {
-          const { query, limit = 5 } = JSON.parse(input);
+          const { query, limit = 3 } = JSON.parse(input);
           const { accessToken } = await getSpotifySession();
 
           if (!accessToken) {
