@@ -1,3 +1,5 @@
+"use server";
+
 import { MemorySaver } from "@langchain/langgraph";
 import { HumanMessage } from "@langchain/core/messages";
 import { DynamicTool } from "@langchain/core/tools";
@@ -36,78 +38,96 @@ export async function createSpotifyPlaylistAgent(userInput: string) {
       name: "search_tracks",
       description: "Search for tracks on Spotify by name, artist, or album",
       func: async (input: string) => {
-        const { query, limit } = JSON.parse(input);
-        const { accessToken } = await getSpotifySession();
+        try {
+          const { query, limit = 5 } = JSON.parse(input);
+          const { accessToken } = await getSpotifySession();
 
-        if (!accessToken) {
-          throw new Error("No Spotify access token available");
+          if (!accessToken) {
+            throw new Error("No Spotify access token available");
+          }
+
+          const searchUrl = `https://api.spotify.com/v1/search?q=${encodeURIComponent(
+            query
+          )}&type=track&limit=${limit}`;
+          const response = await makeSpotifyRequest(searchUrl, {
+            method: "GET",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+            },
+          });
+          return JSON.stringify(response.tracks.items);
+        } catch (error) {
+          console.error("Search tracks error:", error);
+          return "Failed to search tracks";
         }
-
-        const searchUrl = `https://api.spotify.com/v1/search?q=${encodeURIComponent(
-          query
-        )}&type=track&limit=${limit}`;
-        return makeSpotifyRequest(searchUrl, {
-          method: "GET",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        });
       },
     }),
     new DynamicTool({
       name: "create_playlist",
       description: "Create a new playlist on Spotify",
       func: async (input: string) => {
-        const {
-          name,
-          description,
-          public: isPublic = true,
-          collaborative = false,
-        } = JSON.parse(input);
-        const { accessToken, userId } = await getSpotifySession();
-
-        if (!accessToken || !userId) {
-          throw new Error("No Spotify access token or user ID available");
-        }
-
-        const createUrl = `https://api.spotify.com/v1/users/${userId}/playlists`;
-        return makeSpotifyRequest(createUrl, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
+        try {
+          const {
             name,
-            description: description || "",
-            public: isPublic,
-            collaborative,
-          }),
-        });
+            description = "",
+            public: isPublic = true,
+            collaborative = false,
+          } = JSON.parse(input);
+          const { accessToken, userId } = await getSpotifySession();
+
+          if (!accessToken || !userId) {
+            throw new Error("No Spotify access token or user ID available");
+          }
+
+          const createUrl = `https://api.spotify.com/v1/users/${userId}/playlists`;
+          const response = await makeSpotifyRequest(createUrl, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              name,
+              description,
+              public: isPublic,
+              collaborative,
+            }),
+          });
+          return JSON.stringify(response);
+        } catch (error) {
+          console.error("Create playlist error:", error);
+          return "Failed to create playlist";
+        }
       },
     }),
     new DynamicTool({
       name: "add_tracks_to_playlist",
       description: "Add tracks to an existing playlist",
       func: async (input: string) => {
-        const { playlistId, trackUris } = JSON.parse(input);
-        const { accessToken } = await getSpotifySession();
+        try {
+          const { playlistId, trackUris } = JSON.parse(input);
+          const { accessToken } = await getSpotifySession();
 
-        if (!accessToken) {
-          throw new Error("No Spotify access token available");
+          if (!accessToken) {
+            throw new Error("No Spotify access token available");
+          }
+
+          const addUrl = `https://api.spotify.com/v1/playlists/${playlistId}/tracks`;
+          const response = await makeSpotifyRequest(addUrl, {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${accessToken}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              uris: Array.isArray(trackUris) ? trackUris : [trackUris],
+            }),
+          });
+          return JSON.stringify(response);
+        } catch (error) {
+          console.error("Add tracks error:", error);
+          return "Failed to add tracks to playlist";
         }
-
-        const addUrl = `https://api.spotify.com/v1/playlists/${playlistId}/tracks`;
-        return makeSpotifyRequest(addUrl, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            uris: trackUris,
-          }),
-        });
       },
     }),
   ];
