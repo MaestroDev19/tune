@@ -13,7 +13,10 @@ import Image from "next/image";
 import Link from "next/link";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { createClient } from "@/supabase/server";
-import { createSpotifyPlaylistAgent } from "./agent";
+import {
+  getSpotifySession as fetchSpotifySession,
+  getTrackTitles,
+} from "./agent";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -28,10 +31,10 @@ import {
 
 export default async function Home() {
   // In your application code
-  const response = await createSpotifyPlaylistAgent(
-    "Create a chill playlist for studying"
+  const tracks = await getTrackTitles(
+    "I need a playlist high energy rap  songs for the aux"
   );
-  console.log(response);
+  console.log(tracks);
   const supabase = await createClient();
   const {
     data: { user },
@@ -185,4 +188,7 @@ export default async function Home() {
       </div>
     </div>
   );
+}
+function getSpotifySession(arg0: string) {
+  throw new Error("Function not implemented.");
 }

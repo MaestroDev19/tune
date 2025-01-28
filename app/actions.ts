@@ -8,10 +8,11 @@ export async function loginWithSpotify() {
   const supabase = await createClient();
   const origin = (await headers()).get("origin");
 
-
   const { data, error } = await supabase.auth.signInWithOAuth({
     provider: "spotify",
     options: {
+      scopes:
+        "user-read-private user-read-email user-library-read playlist-modify-publics",
       redirectTo: `${origin}/auth/callback`,
     },
   });

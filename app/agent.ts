@@ -4,185 +4,209 @@ import { DynamicTool } from "@langchain/core/tools";
 
 import { ChatGroq } from "@langchain/groq";
 import { createClient } from "@/supabase/server";
-
+import { PromptTemplate } from "@langchain/core/prompts";
 import { StateGraph, MessagesAnnotation } from "@langchain/langgraph";
 import { ToolNode } from "@langchain/langgraph/prebuilt";
+import { z as Zod } from "zod";
+import { RunnableSequence } from "@langchain/core/runnables";
 
-export async function createSpotifyPlaylistAgent(userInput: string) {
-  // Helper function to get Spotify session data
-  async function getSpotifySession() {
+export async function getSpotifySession() {
+  try {
+    let storedSession: string | null = null;
+
+    // Only access localStorage if running in browser
+    if (typeof window !== "undefined") {
+      storedSession = window.localStorage.getItem("spotifySession");
+    }
+
     const supabase = await createClient();
     const {
       data: { session },
+      error,
     } = await supabase.auth.getSession();
-    return {
-      accessToken: session?.provider_token,
-      userId: session?.user?.id,
-    };
-  }
 
-  // Helper function to handle Spotify API requests
-  async function makeSpotifyRequest(url: string, options?: RequestInit) {
-    const response = await fetch(url, options);
-    if (!response.ok) {
-      throw new Error(`Spotify API request failed: ${response.statusText}`);
+    if (error) {
+      throw error;
     }
-    return response.json();
+
+    // Check if we have a valid Spotify provider token
+    if (session?.provider_token) {
+      const spotifySession = {
+        accessToken: session.provider_token,
+        userId: session.user?.id,
+        expiresAt: session.expires_at,
+      };
+
+      // Store the session in localStorage
+      if (typeof window !== "undefined") {
+        window.localStorage.setItem(
+          "spotifySession",
+          JSON.stringify(spotifySession)
+        );
+      }
+
+      return spotifySession;
+    }
+
+    // Fallback to stored session if available
+    if (storedSession) {
+      const parsedSession = JSON.parse(storedSession);
+      if (parsedSession.userId === session?.user?.id) {
+        return parsedSession;
+      }
+    }
+
+    return { accessToken: null, userId: null };
+  } catch (error) {
+    console.error("Error getting Spotify session:", error);
+    return { accessToken: null, userId: null };
   }
-
-  // Define tools for the agent
-  const agentTools = [
-    new DynamicTool({
-      name: "search_tracks",
-      description: "Search for tracks on Spotify by name, artist, or album",
-      func: async (input: string) => {
-        try {
-          const { query, limit = 3 } = JSON.parse(input);
-          const { accessToken } = await getSpotifySession();
-
-          if (!accessToken) {
-            throw new Error("No Spotify access token available");
-          }
-
-          const searchUrl = `https://api.spotify.com/v1/search?q=${encodeURIComponent(
-            query
-          )}&type=track&limit=${limit}`;
-          const response = await makeSpotifyRequest(searchUrl, {
-            method: "GET",
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-            },
-          });
-          return JSON.stringify(response.tracks.items);
-        } catch (error) {
-          console.error("Search tracks error:", error);
-          return "Failed to search tracks";
-        }
-      },
-    }),
-    new DynamicTool({
-      name: "create_playlist",
-      description: "Create a new playlist on Spotify",
-      func: async (input: string) => {
-        try {
-          const {
-            name,
-            description = "",
-            public: isPublic = true,
-            collaborative = false,
-          } = JSON.parse(input);
-          const { accessToken, userId } = await getSpotifySession();
-
-          if (!accessToken || !userId) {
-            throw new Error("No Spotify access token or user ID available");
-          }
-
-          const createUrl = `https://api.spotify.com/v1/users/${userId}/playlists`;
-          const response = await makeSpotifyRequest(createUrl, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              name,
-              description,
-              public: isPublic,
-              collaborative,
-            }),
-          });
-          return JSON.stringify(response);
-        } catch (error) {
-          console.error("Create playlist error:", error);
-          return "Failed to create playlist";
-        }
-      },
-    }),
-    new DynamicTool({
-      name: "add_tracks_to_playlist",
-      description: "Add tracks to an existing playlist",
-      func: async (input: string) => {
-        try {
-          const { playlistId, trackUris } = JSON.parse(input);
-          const { accessToken } = await getSpotifySession();
-
-          if (!accessToken) {
-            throw new Error("No Spotify access token available");
-          }
-
-          const addUrl = `https://api.spotify.com/v1/playlists/${playlistId}/tracks`;
-          const response = await makeSpotifyRequest(addUrl, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${accessToken}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              uris: Array.isArray(trackUris) ? trackUris : [trackUris],
-            }),
-          });
-          return JSON.stringify(response);
-        } catch (error) {
-          console.error("Add tracks error:", error);
-          return "Failed to add tracks to playlist";
-        }
-      },
-    }),
-  ];
-
-  // Create a model and give it access to the tools
-  const model = new ChatGroq({
-    model: "llama-3.3-70b-versatile", // or any other Groq model
-    temperature: 0,
+}
+export const getTrackTitles = async (input: string): Promise<string[]> => {
+  const llm = new ChatGroq({
     apiKey: process.env.NEXT_PUBLIC_GROQ_KEY,
-  }).bindTools(agentTools);
-
-  // Define the function that determines whether to continue or not
-  function shouldContinue({ messages }: typeof MessagesAnnotation.State) {
-    const lastMessage = messages[messages.length - 1];
-
-    // If the LLM makes a tool call, route to the "tools" node
-    if (lastMessage.additional_kwargs.tool_calls) {
-      return "tools";
-    }
-    // Otherwise, stop and reply to the user
-    return "__end__";
-  }
-
-  // Define the function that calls the model
-  async function callModel(state: typeof MessagesAnnotation.State) {
-    const response = await model.invoke(state.messages);
-    return { messages: [response] };
-  }
-
-  // Create and compile workflow
-  const workflow = new StateGraph(MessagesAnnotation)
-    .addNode("agent", callModel)
-    .addEdge("__start__", "agent")
-    .addNode("tools", new ToolNode(agentTools))
-    .addEdge("tools", "agent")
-    .addConditionalEdges("agent", shouldContinue);
-
-  const memory = new MemorySaver();
-  const app = workflow.compile({
-    checkpointer: memory,
+    temperature: 0.2,
+    model: "llama-3.3-70b-specdec",
   });
 
-  // Execute the workflow with user input
-  const finalState = await app.invoke(
-    {
-      messages: [new HumanMessage(userInput)],
+  // Prompt to get genre and mood as a single string
+  const genreMoodTemplate = `
+    Analyze the user's request and determine:
+    1. The most appropriate music genre based on the context
+    2. The mood or atmosphere that best matches the request
+    
+    Respond in this format: "Genre: <genre>, Mood: <mood>"
+    
+    Examples:
+    Input: "Music for a cozy night in"
+    Output: "Genre: lo-fi, Mood: relaxing"
+    
+    Input: "Songs to get me pumped for the gym"
+    Output: "Genre: hip-hop, Mood: energetic"
+    
+    Input: "Background music for a romantic dinner"
+    Output: "Genre: jazz, Mood: romantic"
+    
+    Guidelines:
+    - Infer the genre and mood from the context, even if not explicitly stated
+    - Use your knowledge of music genres and moods
+    - Return only the text in the exact format specified
+    - Do not include any additional text or explanations
+    
+    Question: {input}
+  `;
+
+  const genreMoodPrompt = new PromptTemplate({
+    inputVariables: ["input"],
+    template: genreMoodTemplate,
+  });
+
+  const genreMoodChain = RunnableSequence.from([
+    (input: { input: string }) => ({ input: input.input }),
+    genreMoodPrompt,
+    llm,
+    (response) => {
+      try {
+        const content = response.content as string;
+        const match = content.match(/Genre:\s*(.*?),\s*Mood:\s*(.*)/);
+        if (match) {
+          return { genre: match[1].trim(), mood: match[2].trim() };
+        }
+      } catch (error) {
+        console.error("Error parsing genre and mood:", error);
+      }
+      return { genre: "pop", mood: "neutral" }; // Default fallback
     },
-    {
-      configurable: {
-        thread_id: "spotify_playlist_thread",
-      },
+  ]);
+
+  const genreMoodResponse = await genreMoodChain.invoke({ input });
+
+  // Fetch recent tracks in the specified genre from Spotify
+  const spotifySession = await getSpotifySession();
+  const accessToken = spotifySession?.accessToken || null;
+  const userId = spotifySession?.userId || null;
+
+  let genreTracks: string[] = [];
+  if (accessToken) {
+    try {
+      const response = await fetch(
+        `https://api.spotify.com/v1/search?q=genre:${encodeURIComponent(
+          genreMoodResponse.genre
+        )}&type=track&limit=50&sort=popularity`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
+        }
+      );
+      const data = await response.json();
+      genreTracks = data.tracks.items.map(
+        (track: any) => `${track.name} - ${track.artists[0].name}`
+      );
+    } catch (error) {
+      console.error("Error fetching genre tracks:", error);
     }
-  );
+  }
 
-  return finalState.messages[finalState.messages.length - 1].content;
-}
+  const template = `
+    You are a music-savvy AI assistant that creates personalized Spotify playlists. Your task is to:
+    
+    1. Analyze the user's request: {input}
+    2. Consider the mood: {mood}
+    3. Select tracks ONLY from this list of recent {genre} tracks: {genreTracks}
+    4. Return only a comma-separated string of song titles and artists.
+    
+    Guidelines:
+    - Only select tracks from the provided Spotify tracks list
+    - Ensure the playlist flows well and matches both the genre and mood
+    - If no tracks are available, return an empty string ""
+    
+    Example:
+    Input: "I need a playlist for a relaxing evening with jazz music"
+    Output: "Take Five - Dave Brubeck, Everything's Gonna Be Alright - Kandace Springs"
+    
+    Genre: {genre}
+    Mood: {mood}
+    Available Tracks: {genreTracks}
+    Question: {input}
+  `;
 
-// Example usage
-// const playlistResponse = await createSpotifyPlaylistAgent("Create a playlist for my morning workout");
-// console.log(playlistResponse);
+  const trackPromptTemplate = new PromptTemplate({
+    inputVariables: ["input", "genre", "mood", "genreTracks"],
+    template: template,
+  });
+
+  const trackChain = RunnableSequence.from([
+    (input: { input: string }) => ({
+      input: input.input,
+      genre: genreMoodResponse.genre,
+      mood: genreMoodResponse.mood,
+      genreTracks:
+        genreTracks.length > 0 ? genreTracks.join(", ") : "No tracks available",
+    }),
+    trackPromptTemplate,
+    llm,
+    (response) => {
+      try {
+        // Use regex to extract song titles and artists
+        const trackPattern = /([^,-]+)\s*-\s*([^,]+)/g;
+        const matches = [
+          ...(response.content as string).matchAll(trackPattern),
+        ];
+        return matches.map(
+          (match) => `${match[1].trim()} - ${match[2].trim()}`
+        );
+      } catch (error) {
+        console.error("Error parsing track titles:", error);
+        return [];
+      }
+    },
+  ]);
+
+  const response = await trackChain.invoke({
+    input,
+  });
+
+  // Directly return the array from the chain
+  return response;
+};
